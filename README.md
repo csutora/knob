@@ -1,9 +1,7 @@
 # knob
 
-system-wide parametric equalizer and per-app volume control for mac
-
-offers a 16 band parametric equalizer, per-app volume control, and automatic per-device preset switching.
-does so seamlessly through a virtual audio device that forwards to your real hardware, so no need to configure apps to use it.
+offers a system-wide 16 band parametric equalizer, per-app volume control, and automatic per-device preset switching. all controlled from your terminal with intuitive command completion!
+works seamlessly through a virtual audio device that forwards to your real hardware, so no need to configure apps to use it.
 
 ## installation
 
@@ -110,7 +108,7 @@ if you want to contribute, feel free to send me an email and i'll help you set i
 
 ## usage
 
-for usage, see `knob help`, but here are a few examples to get a feel for it:
+for full usage, see `knob help`, but here are a few examples to get a feel for it:
 ```bash
 # checking status then starting the daemon
 knob
@@ -143,6 +141,10 @@ knob app music unmute
 # bypass parts of the audio processing temporarily
 knob bypass apps
 knob bypass eq
+
+# plot the frequency response curve of the current or a specific preset
+knob plot
+knob plot testing
 
 # get machine-readable json for scripting, works with all list commands
 knob band list -m

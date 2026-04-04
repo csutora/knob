@@ -515,6 +515,8 @@ do {
         try handleRestart()
     case "completions":
         handleCompletions(Array(args.dropFirst()))
+    case "plot":
+        try handlePlot(Array(args.dropFirst()))
     case "help", "--help", "-h":
         printUsage()
     default:
@@ -1218,7 +1220,7 @@ func bashCompletions() -> String {
 
         case "$cword" in
             1)
-                COMPREPLY=($(compgen -W "status bypass band app preset device start stop restart completions help" -- "$cur"))
+                COMPREPLY=($(compgen -W "status bypass band app preset device plot start stop restart completions help" -- "$cur"))
                 ;;
             2)
                 case "${words[1]}" in
@@ -1240,6 +1242,7 @@ func bashCompletions() -> String {
                     app|apps)
                         COMPREPLY=($(compgen -W "mute unmute" -- "$cur"))
                         ;;
+                    plot) COMPREPLY=($(compgen -W "$(_knob_preset_names)" -- "$cur")) ;;
                     preset|presets)
                         case "${words[2]}" in
                             load|remove|rename) COMPREPLY=($(compgen -W "$(_knob_preset_names)" -- "$cur")) ;;
@@ -1285,6 +1288,7 @@ func zshCompletions() -> String {
             'app:manage per-app volumes'
             'preset:manage presets'
             'device:manage device assignments'
+            'plot:plot frequency response'
             'start:start daemon'
             'stop:stop daemon'
             'restart:restart daemon'
@@ -1363,6 +1367,13 @@ func zshCompletions() -> String {
                     compadd -a presets
                 fi
                 ;;
+            plot)
+                if (( CURRENT == 3 )); then
+                    local -a presets
+                    presets=(${(f)"$(_knob_preset_names)"})
+                    compadd -a presets
+                fi
+                ;;
             completions)
                 if (( CURRENT == 3 )); then
                     local -a shells
@@ -1394,7 +1405,7 @@ func fishCompletions() -> String {
         knob app -m 2>/dev/null | python3 -c "import sys,json;[print(a['name']) for a in json.load(sys.stdin)]" 2>/dev/null
     end
 
-    set -l commands status bypass band app preset device start stop restart completions help
+    set -l commands status bypass band app preset device plot start stop restart completions help
 
     complete -c knob -f
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a status -d "Show status"
@@ -1403,6 +1414,7 @@ func fishCompletions() -> String {
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a app -d "Manage per-app volumes"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a preset -d "Manage presets"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a device -d "Manage devices"
+    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a plot -d "Plot frequency response"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a start -d "Start daemon"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a stop -d "Stop daemon"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a restart -d "Restart daemon"
@@ -1481,6 +1493,7 @@ func nushellCompletions() -> String {
                     {value: app, description: "manage per-app volumes"}
                     {value: preset, description: "manage presets"}
                     {value: device, description: "manage device assignments"}
+                    {value: plot, description: "plot frequency response"}
                     {value: start, description: "start daemon"}
                     {value: stop, description: "stop daemon"}
                     {value: restart, description: "restart daemon"}
@@ -1526,6 +1539,7 @@ func nushellCompletions() -> String {
                     [{value: list, description: "list devices"}
                      {value: assign, description: "assign or clear device preset"}]
                 }
+                plot => { do $get_presets }
                 completions => {
                     [{value: bash, description: "bash completions"}
                      {value: zsh, description: "zsh completions"}
@@ -1621,11 +1635,230 @@ func nushellCompletions() -> String {
     """##
 }
 
+// MARK: - Plot
+
+func handlePlot(_ args: [String]) throws {
+    let config = try loadConfig()
+
+    let preset: Preset
+    if let name = args.first {
+        if name == "flat" {
+            preset = Preset()
+        } else {
+            guard let p = config.presets[name] else { fail("preset '\(name)' not found.") }
+            preset = p
+        }
+    } else {
+        preset = config.activePresetValue()
+    }
+
+    // Get terminal width
+    var ws = winsize()
+    let termWidth: Int
+    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0 {
+        termWidth = Int(ws.ws_col)
+    } else {
+        termWidth = 80
+    }
+
+    // Layout: left label (7 chars) + plot area + right margin (1)
+    let labelWidth = 7
+    let plotWidth = termWidth - labelWidth - 1
+    guard plotWidth > 20 else { fail("terminal too narrow") }
+
+    // Braille: each cell is 2 dots wide, 4 dots tall
+    let dotsX = plotWidth * 2
+    let plotRows = 12
+    let dotsY = plotRows * 4
+
+    // Frequency range: 20Hz to 20kHz, log-scaled
+    let fMin = log10(20.0)
+    let fMax = log10(20000.0)
+
+    // Sample rate for coefficient computation (doesn't matter much for response shape,
+    // but needs to be high enough that 20kHz is well below Nyquist)
+    let sampleRate = 96000.0
+
+    // Compute magnitude response at each horizontal dot position
+    var magnitudeDB = [Double](repeating: 0.0, count: dotsX)
+
+    for x in 0..<dotsX {
+        let freq = pow(10.0, fMin + (fMax - fMin) * Double(x) / Double(dotsX - 1))
+
+        // Start with preamp
+        var totalDB = preset.preampGainDB
+
+        // Add each band's contribution
+        for band in preset.bands {
+            let omega = 2.0 * Double.pi * band.frequency / sampleRate
+            let sinW = sin(omega)
+            let cosW = cos(omega)
+            let alpha = sinW / (2.0 * band.q)
+            let A = pow(10.0, band.gainDB / 40.0)
+
+            var b0, b1, b2, a0, a1, a2: Double
+
+            switch band.type {
+            case .peaking:
+                b0 = 1.0 + alpha * A; b1 = -2.0 * cosW; b2 = 1.0 - alpha * A
+                a0 = 1.0 + alpha / A; a1 = -2.0 * cosW; a2 = 1.0 - alpha / A
+            case .lowShelf:
+                let t = 2.0 * sqrt(A) * alpha
+                b0 = A * ((A+1) - (A-1)*cosW + t); b1 = 2*A*((A-1) - (A+1)*cosW); b2 = A*((A+1) - (A-1)*cosW - t)
+                a0 = (A+1) + (A-1)*cosW + t; a1 = -2*((A-1) + (A+1)*cosW); a2 = (A+1) + (A-1)*cosW - t
+            case .highShelf:
+                let t = 2.0 * sqrt(A) * alpha
+                b0 = A * ((A+1) + (A-1)*cosW + t); b1 = -2*A*((A-1) + (A+1)*cosW); b2 = A*((A+1) + (A-1)*cosW - t)
+                a0 = (A+1) - (A-1)*cosW + t; a1 = 2*((A-1) - (A+1)*cosW); a2 = (A+1) - (A-1)*cosW - t
+            case .lowpass:
+                b0 = (1-cosW)/2; b1 = 1-cosW; b2 = (1-cosW)/2
+                a0 = 1+alpha; a1 = -2*cosW; a2 = 1-alpha
+            case .highpass:
+                b0 = (1+cosW)/2; b1 = -(1+cosW); b2 = (1+cosW)/2
+                a0 = 1+alpha; a1 = -2*cosW; a2 = 1-alpha
+            }
+
+            // Evaluate H(e^jw) at the target frequency
+            let w = 2.0 * Double.pi * freq / sampleRate
+            let cw = cos(w)
+            let cw2 = cos(2.0 * w)
+            let sw = sin(w)
+            let sw2 = sin(2.0 * w)
+
+            let numRe = b0/a0 + b1/a0 * cw + b2/a0 * cw2
+            let numIm = -(b1/a0 * sw + b2/a0 * sw2)
+            let denRe = 1.0 + a1/a0 * cw + a2/a0 * cw2
+            let denIm = -(a1/a0 * sw + a2/a0 * sw2)
+
+            let numMag2 = numRe * numRe + numIm * numIm
+            let denMag2 = denRe * denRe + denIm * denIm
+
+            if denMag2 > 0 {
+                totalDB += 10.0 * log10(numMag2 / denMag2)
+            }
+        }
+
+        magnitudeDB[x] = totalDB
+    }
+
+    // Auto-scale Y axis with 15% padding
+    let minDB = magnitudeDB.min()!
+    let maxDB = magnitudeDB.max()!
+    let range = max(maxDB - minDB, 1.0)
+    let padding = range * 0.15
+    let yMin = minDB - padding
+    let yMax = maxDB + padding
+
+    // If the range is small (flat-ish), center around 0dB with at least +-3dB
+    let (plotYMin, plotYMax): (Double, Double)
+    if yMax - yMin < 6.0 {
+        let center = (yMin + yMax) / 2.0
+        plotYMin = center - 3.0
+        plotYMax = center + 3.0
+    } else {
+        plotYMin = yMin
+        plotYMax = yMax
+    }
+
+    // Build braille grid
+    var grid = [[Bool]](repeating: [Bool](repeating: false, count: dotsX), count: dotsY)
+
+    for x in 0..<dotsX {
+        let normalized = (magnitudeDB[x] - plotYMin) / (plotYMax - plotYMin)
+        let y = Int((normalized * Double(dotsY - 1)).rounded())
+        if y >= 0 && y < dotsY {
+            grid[dotsY - 1 - y][x] = true
+
+            // Fill vertically toward the 0dB line for visual weight
+            let zeroY = Int(((0.0 - plotYMin) / (plotYMax - plotYMin) * Double(dotsY - 1)).rounded())
+            let zeroRow = dotsY - 1 - zeroY
+            let curRow = dotsY - 1 - y
+            // Only fill if we're close (within 2 dots) for a subtle thickness
+        }
+    }
+
+    // Also draw the 0dB baseline as dots
+    let zeroNorm = (0.0 - plotYMin) / (plotYMax - plotYMin)
+    let zeroRow = dotsY - 1 - Int((zeroNorm * Double(dotsY - 1)).rounded())
+    if zeroRow >= 0 && zeroRow < dotsY {
+        for x in stride(from: 0, to: dotsX, by: 4) {
+            grid[zeroRow][x] = true
+        }
+    }
+
+    // Render braille characters
+    // Braille Unicode: U+2800 + dot pattern
+    // Dot positions in a 2x4 cell:
+    //   0 3
+    //   1 4
+    //   2 5
+    //   6 7
+    var output = ""
+    for row in stride(from: 0, to: dotsY, by: 4) {
+        // Y label for this row (top of cell = highest dB)
+        let rowDB = plotYMax - (plotYMax - plotYMin) * Double(row) / Double(dotsY)
+        let label = String(format: "%+5.1f ", rowDB)
+        output += label
+
+        for col in stride(from: 0, to: dotsX, by: 2) {
+            var codePoint: UInt32 = 0x2800
+            // Map grid positions to braille dot bits
+            for dy in 0..<4 {
+                for dx in 0..<2 {
+                    let gy = row + dy
+                    let gx = col + dx
+                    if gy < dotsY && gx < dotsX && grid[gy][gx] {
+                        let bit: UInt32
+                        switch (dx, dy) {
+                        case (0, 0): bit = 0
+                        case (0, 1): bit = 1
+                        case (0, 2): bit = 2
+                        case (1, 0): bit = 3
+                        case (1, 1): bit = 4
+                        case (1, 2): bit = 5
+                        case (0, 3): bit = 6
+                        case (1, 3): bit = 7
+                        default: bit = 0
+                        }
+                        codePoint |= 1 << bit
+                    }
+                }
+            }
+            output += String(UnicodeScalar(codePoint)!)
+        }
+        output += "\n"
+    }
+
+    // Frequency axis labels
+    let freqLabels: [(Double, String)] = [
+        (20, "20"), (50, "50"), (100, "100"), (200, "200"), (500, "500"),
+        (1000, "1k"), (2000, "2k"), (5000, "5k"), (10000, "10k"), (20000, "20k")
+    ]
+
+    var axisLine = String(repeating: " ", count: labelWidth)
+    var axisChars = [Character](repeating: " ", count: plotWidth)
+
+    for (freq, label) in freqLabels {
+        var pos = Int((log10(freq) - fMin) / (fMax - fMin) * Double(plotWidth - 1))
+        // Right-align if it would overflow
+        if pos + label.count > plotWidth { pos = plotWidth - label.count }
+        if pos >= 0 {
+            for (i, ch) in label.enumerated() {
+                axisChars[pos + i] = ch
+            }
+        }
+    }
+    axisLine += String(axisChars)
+    output += axisLine
+
+    print(output)
+}
+
 // MARK: - Usage
 
 func printUsage() {
     print("""
-    knob 0.1.3
+    knob 0.1.4
 
     parametric equalizer and per-app volume control for mac
 
@@ -1667,6 +1900,10 @@ func printUsage() {
     | [  | list ]                   list output devices and assignments
     | assign <device> <preset>      assign preset to device
     | assign <device>               clear device assignment
+
+    knob plot
+    | [  ]                          plot current preset's frequency response
+    | <preset name>                 plot a specific preset's frequency response
 
     knob completions <shell>        generate completions (bash/zsh/fish/nu)
 
