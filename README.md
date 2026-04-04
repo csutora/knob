@@ -2,6 +2,7 @@
 
 offers a system-wide 16 band parametric equalizer, per-app volume control, and automatic per-device preset switching. all controlled from your terminal with intuitive command completion!
 works seamlessly through a virtual audio device that forwards to your real hardware, so no need to configure apps to use it.
+oh, and it uses <1% of a single cpu core with most audio setups, and even when processing 384Khz 32bit stereo with 7 bands, it hovers around 3%.
 
 ## installation
 
