@@ -14,7 +14,7 @@
       # Rebuild with: make dist
       mkKnob = pkgs: pkgs.stdenv.mkDerivation {
         pname = "knob";
-        version = "0.1.0";
+        version = "0.1.2";
         src = ./dist;
 
         dontBuild = true;

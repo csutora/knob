@@ -1640,7 +1640,7 @@ func nushellCompletions() -> String {
 
 func printUsage() {
     print("""
-    knob 0.1.1
+    knob 0.1.2
 
     parametric equalizer and per-app volume control for mac
 

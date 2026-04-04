@@ -29,7 +29,10 @@ dist: release
 	cp -R .build/release/knob.app dist/
 	cp -R .build/release/knob-driver.driver dist/
 	cp .build/release/knob-ipc dist/knob-ipc
-	@echo "Built dist/ — commit this directory"
+	@VERSION=$$(grep -oE '[0-9]+\.[0-9]+\.[0-9]+' Sources/knob/main.swift | head -1); \
+	tar -czf "knob-$$VERSION.tar.gz" -C dist knob.app knob-driver.driver knob-ipc -C ../Resources com.csutora.knob.plist com.csutora.knob.ipc.plist; \
+	echo "Built dist/ and knob-$$VERSION.tar.gz"; \
+	shasum -a 256 "knob-$$VERSION.tar.gz"
 
 install: release
 	mkdir -p /usr/local/bin ~/Applications ~/Library/LaunchAgents
