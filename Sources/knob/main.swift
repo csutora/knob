@@ -96,13 +96,6 @@ func formatDB(_ db: Double) -> String {
 }
 
 func formatFreq(_ hz: Double) -> String {
-    if hz >= 1000 {
-        let k = hz / 1000
-        if k == k.rounded() {
-            return "\(Int(k))kHz"
-        }
-        return "\(String(format: "%.1f", k))kHz"
-    }
     if hz == hz.rounded() {
         return "\(Int(hz))Hz"
     }
@@ -111,12 +104,20 @@ func formatFreq(_ hz: Double) -> String {
 
 func formatAppVolume(_ vol: Double) -> String {
     if vol < 0 { return "muted (\(String(format: "%.2f", -vol)))" }
+    if vol == 1.0 { return "" }
     return String(format: "%.2f", vol)
 }
 
+func formatBandColumns(_ band: Band) -> (freq: String, gain: String, q: String, type: String) {
+    let freq = band.frequency == band.frequency.rounded() ? "\(Int(band.frequency))" : String(format: "%.1f", band.frequency)
+    let gain = (band.type == .lowpass || band.type == .highpass) ? "--" : String(format: "%+.1f", band.gainDB)
+    let q = String(format: "%.2f", band.q)
+    return (freq, gain, q, band.type.rawValue)
+}
+
 func formatBand(_ band: Band) -> String {
-    let gainStr = (band.type == .lowpass || band.type == .highpass) ? "" : " \(formatDB(band.gainDB))"
-    return "\(formatFreq(band.frequency))\(gainStr) Q=\(String(format: "%.2f", band.q)) \(band.type.rawValue)"
+    let c = formatBandColumns(band)
+    return "\(c.freq) \(c.gain) \(c.q) \(c.type)"
 }
 
 // MARK: - Frequency parsing
@@ -498,6 +499,7 @@ do {
     case "band", "bands":
         try handleBand(Array(args.dropFirst()))
     case "preamp", "pre":
+        // Aliases for knob band preamp
         try handlePreamp(Array(args.dropFirst()))
     case "app", "apps":
         try handleApp(Array(args.dropFirst()))
@@ -532,7 +534,7 @@ func handleStatus() throws {
 
     if let deviceName = try? getDefaultOutputDeviceName() {
         let assigned = config.devicePresets[deviceName]
-        print("device:  \(deviceName)\(assigned != nil ? " → \(assigned!)" : "")")
+        print("device:  \(deviceName)\(assigned != nil ? " -> \(assigned!)" : "")")
     }
 
     print("preset:  \(config.activePreset)")
@@ -541,7 +543,7 @@ func handleStatus() throws {
     print("preamp:  \(formatDB(preset.preampGainDB))")
 
     var bypassParts: [String] = []
-    if !config.eqEnabled { bypassParts.append("eq") }
+    if !config.eqEnabled { bypassParts.append("equalizer") }
     if config.appVolumesBypassed { bypassParts.append("app volumes") }
     if bypassParts.isEmpty {
         print("bypass:  off")
@@ -550,9 +552,14 @@ func handleStatus() throws {
     }
 
     if !preset.bands.isEmpty {
+        let pad = 3
         print("bands:")
-        for band in preset.bands {
-            print("  \(formatBand(band))")
+        let cols = preset.bands.map { formatBandColumns($0) }
+        let wFreq = cols.map { $0.freq.count }.max()! + pad
+        let wGain = cols.map { $0.gain.count }.max()! + pad
+        let wQ = cols.map { $0.q.count }.max()! + pad
+        for c in cols {
+            print("  \(c.freq.padding(toLength: wFreq, withPad: " ", startingAt: 0))\(c.gain.padding(toLength: wGain, withPad: " ", startingAt: 0))\(c.q.padding(toLength: wQ, withPad: " ", startingAt: 0))\(c.type)")
         }
     } else {
         print("bands:   (none)")
@@ -571,11 +578,11 @@ func handleBypass(_ args: [String]) throws {
         config.eqEnabled = newEQ
         config.appVolumesBypassed = !newEQ
         try saveConfigAndReload(config)
-        print(newEQ ? "bypass off" : "bypass on (eq + app volumes)")
+        print(newEQ ? "bypass off" : "bypass on (equalizer + app volumes)")
     case "eq":
         config.eqEnabled = !config.eqEnabled
         try saveConfigAndReload(config)
-        print(config.eqEnabled ? "eq bypass off" : "eq bypassed")
+        print(config.eqEnabled ? "equalizer bypass off" : "equalizer bypassed")
     case "app", "apps":
         config.appVolumesBypassed = !config.appVolumesBypassed
         try saveConfigAndReload(config)
@@ -609,21 +616,48 @@ func handlePreamp(_ args: [String]) throws {
 
 func printBandList(_ config: EQConfig) {
     let preset = config.activePresetValue()
-    if preset.bands.isEmpty {
-        print("no bands in preset '\(config.activePreset)'")
-        return
-    }
-    print("preset '\(config.activePreset)' (preamp: \(formatDB(preset.preampGainDB))):")
+    let pad = 3
+
+    struct BandRow { let freq: String; let gain: String; let q: String; let type: String }
+    var rows = [BandRow(freq: "preamp", gain: String(format: "%+.1f", preset.preampGainDB), q: "", type: "")]
     for band in preset.bands {
-        print("  \(formatBand(band))")
+        let c = formatBandColumns(band)
+        rows.append(BandRow(freq: c.freq, gain: c.gain, q: c.q, type: c.type))
+    }
+
+    let headers = ("FREQ (Hz)", "GAIN (dB)", "Q", "TYPE")
+    let wFreq = max(headers.0.count, rows.map { $0.freq.count }.max()!) + pad
+    let wGain = max(headers.1.count, rows.map { $0.gain.count }.max()!) + pad
+    let wQ = max(headers.2.count, rows.map { $0.q.count }.max()!) + pad
+    print(
+        headers.0.padding(toLength: wFreq, withPad: " ", startingAt: 0) +
+        headers.1.padding(toLength: wGain, withPad: " ", startingAt: 0) +
+        headers.2.padding(toLength: wQ, withPad: " ", startingAt: 0) +
+        headers.3)
+    for r in rows {
+        print(
+            r.freq.padding(toLength: wFreq, withPad: " ", startingAt: 0) +
+            r.gain.padding(toLength: wGain, withPad: " ", startingAt: 0) +
+            r.q.padding(toLength: wQ, withPad: " ", startingAt: 0) +
+            r.type)
     }
 }
 
 func handleBand(_ args: [String]) throws {
     // Bare `knob band` or `knob band list`
-    if args.isEmpty || args.first == "list" {
+    if args.isEmpty || args.first == "list" || args.first == "-m" {
         let config = try loadConfig()
-        printBandList(config)
+        if args.contains("-m") {
+            let preset = config.activePresetValue()
+            var items: [[String: Any]] = [["type": "preamp", "gain": preset.preampGainDB]]
+            for b in preset.bands {
+                items.append(["freq": b.frequency, "gain": b.gainDB, "q": b.q, "type": b.type.rawValue])
+            }
+            let data = try JSONSerialization.data(withJSONObject: items)
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            printBandList(config)
+        }
         return
     }
 
@@ -721,8 +755,8 @@ func handleBand(_ args: [String]) throws {
 
 func handleApp(_ args: [String]) throws {
     // Bare `knob app` or `knob app list`
-    if args.isEmpty || args.first == "list" {
-        try handleAppList()
+    if args.isEmpty || args.first == "list" || args.first == "-m" {
+        try handleAppList(machine: args.contains("-m"))
         return
     }
 
@@ -764,23 +798,28 @@ func handleApp(_ args: [String]) throws {
             config.appVolumes[bundleID] = restored
         }
         try saveConfigAndReload(config)
-        print("unmuted \(bundleID) → \(String(format: "%.2f", restored))")
+        print("unmuted \(bundleID) -> \(String(format: "%.2f", restored))")
         return
     }
 
-    // `knob app <volume> <app name>`
-    guard let volume = Double(args[0]) else {
-        fail("usage: knob app <volume> <app name> | mute <app> | unmute <app>")
+    // `knob app <app name> <volume>`
+    // Last arg is the volume, everything before is the app name
+    guard args.count >= 2, let volume = Double(args.last!) else {
+        fail("usage: knob app <app name> <volume> | mute <app> | unmute <app>")
     }
-    let appName = args.dropFirst().joined(separator: " ")
-    guard !appName.isEmpty else { fail("usage: knob app <volume> <app name>") }
+    let appName = args.dropLast().joined(separator: " ")
+    guard !appName.isEmpty else { fail("usage: knob app <app name> <volume>") }
     let bundleID = resolveApp(appName, config: config)
-    config.appVolumes[bundleID] = volume
+    if volume == 1.0 {
+        config.appVolumes.removeValue(forKey: bundleID)
+    } else {
+        config.appVolumes[bundleID] = volume
+    }
     try saveConfigAndReload(config)
     print("set \(bundleID) to \(String(format: "%.2f", volume))")
 }
 
-func handleAppList() throws {
+func handleAppList(machine: Bool = false) throws {
     let config = try loadConfig()
     let runningApps = NSWorkspace.shared.runningApplications
         .filter { $0.activationPolicy == .regular && $0.bundleIdentifier != nil }
@@ -812,7 +851,8 @@ func handleAppList() throws {
     }
 
     if rows.isEmpty {
-        print("no apps found.")
+        if machine { print("[]") }
+        else { print("no apps found.") }
         return
     }
 
@@ -820,10 +860,21 @@ func handleAppList() throws {
     let notRunning = rows.filter { !$0.isRunning }.sorted { $0.bundleID < $1.bundleID }
     let sorted = running + notRunning
 
+    if machine {
+        let items = sorted.map { r -> [String: Any] in
+            var item: [String: Any] = ["bundle_id": r.bundleID, "name": r.name, "running": r.isRunning]
+            if !r.volume.isEmpty { item["volume"] = r.volume }
+            return item
+        }
+        let data = try JSONSerialization.data(withJSONObject: items)
+        print(String(data: data, encoding: .utf8)!)
+        return
+    }
+
     let headers = ("BUNDLE ID", "NAME", "PID", "VOLUME")
-    let colBundle = max(headers.0.count, sorted.map { $0.bundleID.count }.max() ?? 0) + 2
-    let colName = max(headers.1.count, sorted.map { $0.name.count }.max() ?? 0) + 2
-    let colPID = max(headers.2.count, sorted.map { $0.pid.count }.max() ?? 0) + 2
+    let colBundle = max(headers.0.count, sorted.map { $0.bundleID.count }.max() ?? 0) + 3
+    let colName = max(headers.1.count, sorted.map { $0.name.count }.max() ?? 0) + 3
+    let colPID = max(headers.2.count, sorted.map { $0.pid.count }.max() ?? 0) + 3
 
     print(
         headers.0.padding(toLength: colBundle, withPad: " ", startingAt: 0) +
@@ -848,14 +899,36 @@ func handlePreset(_ args: [String]) throws {
     let sub = args.first
 
     switch sub {
-    case nil, "list":
+    case nil, "list", "-m":
         let config = try loadConfig()
-        let flatMarker = config.activePreset == "flat" ? " *" : ""
-        print("flat\(flatMarker) (0 bands)")
-        for name in config.presets.keys.sorted() where name != "flat" {
-            let marker = name == config.activePreset ? " *" : ""
-            let preset = config.presets[name]!
-            print("\(name)\(marker) (\(preset.bands.count) bands)")
+        let isM = args.contains("-m")
+        if isM {
+            var items: [[String: Any]] = [["name": "flat", "bands": 0, "active": config.activePreset == "flat"]]
+            for name in config.presets.keys.sorted() {
+                items.append(["name": name, "bands": config.presets[name]!.bands.count, "active": config.activePreset == name])
+            }
+            let data = try JSONSerialization.data(withJSONObject: items)
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            struct PresetRow { let name: String; let bands: String; let active: String }
+            var rows = [PresetRow(name: "flat", bands: "0 bands", active: config.activePreset == "flat" ? "*" : "")]
+            for name in config.presets.keys.sorted() {
+                let p = config.presets[name]!
+                rows.append(PresetRow(name: name, bands: "\(p.bands.count) bands", active: config.activePreset == name ? "*" : ""))
+            }
+            let pad = 3
+            let headers = ("PRESET", "BANDS")
+            let wName = max(headers.0.count, rows.map { $0.name.count }.max()!) + pad
+            let wBands = max(headers.1.count, rows.map { $0.bands.count }.max()!) + pad
+            print(
+                headers.0.padding(toLength: wName, withPad: " ", startingAt: 0) +
+                headers.1.padding(toLength: wBands, withPad: " ", startingAt: 0))
+            for r in rows {
+                print(
+                    r.name.padding(toLength: wName, withPad: " ", startingAt: 0) +
+                    r.bands.padding(toLength: wBands, withPad: " ", startingAt: 0) +
+                    r.active)
+            }
         }
 
     case "load":
@@ -922,7 +995,7 @@ func handlePreset(_ args: [String]) throws {
         print("deleted '\(name)'.")
 
     default:
-        fail("usage: knob preset <list | load | save | rename | delete>")
+        fail("usage: knob preset <list | load | save | rename | remove>")
     }
 }
 
@@ -932,16 +1005,41 @@ func handleDevice(_ args: [String]) throws {
     let sub = args.first
 
     switch sub {
-    case nil, "list":
+    case nil, "list", "-m":
         let config = try loadConfig()
         let devices = try listOutputDevices()
         let currentName = try? getDefaultOutputDeviceName()
-
-        for device in devices {
-            let isCurrent = device.name == currentName ? " *" : ""
-            let assigned = config.devicePresets[device.name]
-            let mapping = assigned != nil ? " → \(assigned!)" : ""
-            print("\(device.name)\(isCurrent)\(mapping)")
+        let isM = args.contains("-m")
+        if isM {
+            var items: [[String: Any]] = []
+            for d in devices {
+                var item: [String: Any] = ["name": d.name, "active": d.name == currentName]
+                if let p = config.devicePresets[d.name] { item["preset"] = p }
+                items.append(item)
+            }
+            let data = try JSONSerialization.data(withJSONObject: items)
+            print(String(data: data, encoding: .utf8)!)
+        } else {
+            struct DevRow { let name: String; let preset: String; let active: String }
+            var rows: [DevRow] = []
+            for d in devices {
+                let preset = config.devicePresets[d.name] ?? ""
+                let active = d.name == currentName ? "*" : ""
+                rows.append(DevRow(name: d.name, preset: preset, active: active))
+            }
+            let pad = 3
+            let headers = ("DEVICE", "PRESET")
+            let wName = max(headers.0.count, rows.map { $0.name.count }.max()!) + pad
+            let wPreset = max(headers.1.count, rows.map { $0.preset.count }.max()!) + pad
+            print(
+                headers.0.padding(toLength: wName, withPad: " ", startingAt: 0) +
+                headers.1.padding(toLength: wPreset, withPad: " ", startingAt: 0))
+            for r in rows {
+                print(
+                    r.name.padding(toLength: wName, withPad: " ", startingAt: 0) +
+                    r.preset.padding(toLength: wPreset, withPad: " ", startingAt: 0) +
+                    r.active)
+            }
         }
 
     case "assign":
@@ -967,7 +1065,7 @@ func handleDevice(_ args: [String]) throws {
             }
             config.devicePresets[deviceName] = presetName
             try saveConfigAndReload(config)
-            print("assigned '\(deviceName)' → '\(presetName)'.")
+            print("assigned '\(deviceName)' -> '\(presetName)'.")
         }
 
     default:
@@ -1115,21 +1213,26 @@ func handleCompletions(_ args: [String]) {
 }
 
 func bashCompletions() -> String {
-    return """
+    return ##"""
     _knob() {
         local cur prev words cword
         _init_completion || return
 
+        _knob_band_freqs() { knob band -m 2>/dev/null | python3 -c "import sys,json;[print(str(int(b['freq']) if b['freq']==int(b['freq']) else b['freq'])+'Hz') for b in json.load(sys.stdin) if b.get('type','')!='preamp']" 2>/dev/null; }
+        _knob_preset_names() { knob preset -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null; }
+        _knob_device_names() { knob device -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null; }
+        _knob_app_names() { knob app -m 2>/dev/null | python3 -c "import sys,json;[print(a['name']) for a in json.load(sys.stdin)]" 2>/dev/null; }
+
         case "$cword" in
             1)
-                COMPREPLY=($(compgen -W "status bypass band bands preamp pre app apps preset presets device devices start stop restart completions help" -- "$cur"))
+                COMPREPLY=($(compgen -W "status bypass band app preset device start stop restart completions help" -- "$cur"))
                 ;;
             2)
                 case "${words[1]}" in
-                    bypass) COMPREPLY=($(compgen -W "eq app apps" -- "$cur")) ;;
-                    band|bands) COMPREPLY=($(compgen -W "list remove pre preamp $(knob band list 2>/dev/null | grep -oE '[0-9]+Hz|[0-9.]+kHz' | head -16)" -- "$cur")) ;;
-                    app|apps) COMPREPLY=($(compgen -W "list mute unmute" -- "$cur")) ;;
-                    preset|presets) COMPREPLY=($(compgen -W "list load save rename delete remove" -- "$cur")) ;;
+                    bypass) COMPREPLY=($(compgen -W "eq app" -- "$cur")) ;;
+                    band|bands) COMPREPLY=($(compgen -W "list remove preamp $(_knob_band_freqs)" -- "$cur")) ;;
+                    app|apps) COMPREPLY=($(compgen -W "list mute unmute $(_knob_app_names)" -- "$cur")) ;;
+                    preset|presets) COMPREPLY=($(compgen -W "list load save rename remove" -- "$cur")) ;;
                     device|devices) COMPREPLY=($(compgen -W "list assign" -- "$cur")) ;;
                     completions) COMPREPLY=($(compgen -W "bash zsh fish nu" -- "$cur")) ;;
                 esac
@@ -1138,17 +1241,22 @@ func bashCompletions() -> String {
                 case "${words[1]}" in
                     band|bands)
                         if [[ "${words[2]}" == "remove" ]]; then
-                            COMPREPLY=($(compgen -W "all $(knob band list 2>/dev/null | grep -oE '[0-9]+Hz|[0-9.]+kHz' | head -16)" -- "$cur"))
+                            COMPREPLY=($(compgen -W "all $(_knob_band_freqs)" -- "$cur"))
+                        fi
+                        ;;
+                    app|apps)
+                        if [[ "${words[2]}" == "mute" || "${words[2]}" == "unmute" ]]; then
+                            COMPREPLY=($(compgen -W "$(_knob_app_names)" -- "$cur"))
                         fi
                         ;;
                     preset|presets)
                         case "${words[2]}" in
-                            load|delete|remove|rename) COMPREPLY=($(compgen -W "$(knob preset list 2>/dev/null | awk '{print $1}')" -- "$cur")) ;;
+                            load|remove|rename) COMPREPLY=($(compgen -W "$(_knob_preset_names)" -- "$cur")) ;;
                         esac
                         ;;
                     device|devices)
                         if [[ "${words[2]}" == "assign" ]]; then
-                            COMPREPLY=($(compgen -W "$(knob device list 2>/dev/null | sed 's/ .*//')" -- "$cur"))
+                            COMPREPLY=($(compgen -W "$(_knob_device_names)" -- "$cur"))
                         fi
                         ;;
                 esac
@@ -1157,7 +1265,7 @@ func bashCompletions() -> String {
                 case "${words[1]}" in
                     device|devices)
                         if [[ "${words[2]}" == "assign" ]]; then
-                            COMPREPLY=($(compgen -W "$(knob preset list 2>/dev/null | awk '{print $1}')" -- "$cur"))
+                            COMPREPLY=($(compgen -W "$(_knob_preset_names)" -- "$cur"))
                         fi
                         ;;
                 esac
@@ -1165,28 +1273,27 @@ func bashCompletions() -> String {
         esac
     }
     complete -F _knob knob
-    """
+    """##
 }
 
 func zshCompletions() -> String {
-    return """
+    return ##"""
     #compdef knob
+
+    _knob_band_freqs() { knob band -m 2>/dev/null | python3 -c "import sys,json;[print(str(int(b['freq']) if b['freq']==int(b['freq']) else b['freq'])+'Hz') for b in json.load(sys.stdin) if b.get('type','')!='preamp']" 2>/dev/null; }
+    _knob_preset_names() { knob preset -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null; }
+    _knob_device_names() { knob device -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null; }
+    _knob_app_names() { knob app -m 2>/dev/null | python3 -c "import sys,json;[print(a['name']) for a in json.load(sys.stdin)]" 2>/dev/null; }
 
     _knob() {
         local -a subcommands
         subcommands=(
             'status:show status'
             'bypass:toggle bypass'
-            'band:manage EQ bands'
-            'bands:list EQ bands'
-            'preamp:set preamp gain'
-            'pre:set preamp gain'
+            'band:manage equalizer bands'
             'app:manage per-app volumes'
-            'apps:list apps and volumes'
             'preset:manage presets'
-            'presets:list presets'
             'device:manage device assignments'
-            'devices:list devices'
             'start:start daemon'
             'stop:stop daemon'
             'restart:restart daemon'
@@ -1203,21 +1310,21 @@ func zshCompletions() -> String {
             bypass)
                 if (( CURRENT == 3 )); then
                     local -a targets
-                    targets=('eq:toggle EQ bypass only' 'app:toggle app volume bypass' 'apps:toggle app volume bypass')
+                    targets=('eq:toggle equalizer bypass' 'app:toggle app volume bypass')
                     _describe 'target' targets
                 fi
                 ;;
             band|bands)
                 if (( CURRENT == 3 )); then
                     local -a band_cmds
-                    band_cmds=('list:list bands' 'remove:remove band' 'pre:set preamp gain' 'preamp:set preamp gain')
+                    band_cmds=('list:list bands' 'remove:remove band' 'preamp:set preamp gain')
                     _describe 'band command' band_cmds
                     local -a freqs
-                    freqs=(${(f)"$(knob band list 2>/dev/null | grep -oE '[0-9]+Hz|[0-9.]+kHz')"})
+                    freqs=(${(f)"$(_knob_band_freqs)"})
                     (( ${#freqs} )) && compadd -a freqs
                 elif (( CURRENT == 4 )) && [[ "$words[3]" == "remove" ]]; then
                     local -a freqs
-                    freqs=(all ${(f)"$(knob band list 2>/dev/null | grep -oE '[0-9]+Hz|[0-9.]+kHz')"})
+                    freqs=(all ${(f)"$(_knob_band_freqs)"})
                     compadd -a freqs
                 fi
                 ;;
@@ -1226,18 +1333,27 @@ func zshCompletions() -> String {
                     local -a app_cmds
                     app_cmds=('list:list apps and volumes' 'mute:mute app' 'unmute:unmute app')
                     _describe 'app command' app_cmds
+                    local -a apps
+                    apps=(${(f)"$(_knob_app_names)"})
+                    (( ${#apps} )) && compadd -a apps
+                elif (( CURRENT == 4 )); then
+                    if [[ "$words[3]" == "mute" || "$words[3]" == "unmute" ]]; then
+                        local -a apps
+                        apps=(${(f)"$(_knob_app_names)"})
+                        compadd -a apps
+                    fi
                 fi
                 ;;
             preset|presets)
                 if (( CURRENT == 3 )); then
                     local -a preset_cmds
-                    preset_cmds=('list:list presets' 'load:switch to preset' 'save:save current state' 'rename:rename preset' 'delete:delete preset' 'remove:delete preset')
+                    preset_cmds=('list:list presets' 'load:switch to preset' 'save:save current state' 'rename:rename preset' 'remove:remove preset')
                     _describe 'preset command' preset_cmds
                 elif (( CURRENT == 4 )); then
                     case "$words[3]" in
-                        load|delete|remove|rename)
+                        load|remove|rename)
                             local -a presets
-                            presets=(${(f)"$(knob preset list 2>/dev/null | awk '{print $1}')"})
+                            presets=(${(f)"$(_knob_preset_names)"})
                             compadd -a presets
                             ;;
                     esac
@@ -1250,11 +1366,11 @@ func zshCompletions() -> String {
                     _describe 'device command' device_cmds
                 elif (( CURRENT == 4 )) && [[ "$words[3]" == "assign" ]]; then
                     local -a devices
-                    devices=(${(f)"$(knob device list 2>/dev/null | sed 's/ \\*.*//' | sed 's/ →.*//')"})
-                    compadd -a devices
+                    devices=(${(f)"$(_knob_device_names)"})
+                    compadd -Q -a devices
                 elif (( CURRENT == 5 )) && [[ "$words[3]" == "assign" ]]; then
                     local -a presets
-                    presets=(${(f)"$(knob preset list 2>/dev/null | awk '{print $1}')"})
+                    presets=(${(f)"$(_knob_preset_names)"})
                     compadd -a presets
                 fi
                 ;;
@@ -1269,153 +1385,262 @@ func zshCompletions() -> String {
     }
 
     _knob "$@"
-    """
+    """##
 }
 
 func fishCompletions() -> String {
-    return """
+    return ##"""
     # knob completions for fish
 
-    set -l commands status bypass band bands preamp pre app apps preset presets device devices start stop restart completions help
+    function __knob_band_freqs
+        knob band -m 2>/dev/null | python3 -c "import sys,json;[print(str(int(b['freq']) if b['freq']==int(b['freq']) else b['freq'])+'Hz') for b in json.load(sys.stdin) if b.get('type','')!='preamp']" 2>/dev/null
+    end
+    function __knob_preset_names
+        knob preset -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null
+    end
+    function __knob_device_names
+        knob device -m 2>/dev/null | python3 -c "import sys,json;[print(p['name']) for p in json.load(sys.stdin)]" 2>/dev/null
+    end
+    function __knob_app_names
+        knob app -m 2>/dev/null | python3 -c "import sys,json;[print(a['name']) for a in json.load(sys.stdin)]" 2>/dev/null
+    end
+
+    set -l commands status bypass band app preset device start stop restart completions help
 
     complete -c knob -f
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a status -d "Show status"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a bypass -d "Toggle bypass"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a band -d "Manage EQ bands"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a bands -d "List EQ bands"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a preamp -d "Set preamp gain"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a pre -d "Set preamp gain"
+    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a band -d "Manage equalizer bands"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a app -d "Manage per-app volumes"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a apps -d "List apps and volumes"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a preset -d "Manage presets"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a presets -d "List presets"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a device -d "Manage devices"
-    complete -c knob -n "not __fish_seen_subcommand_from $commands" -a devices -d "List devices"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a start -d "Start daemon"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a stop -d "Stop daemon"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a restart -d "Restart daemon"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a completions -d "Generate completions"
     complete -c knob -n "not __fish_seen_subcommand_from $commands" -a help -d "Show help"
 
-    complete -c knob -n "__fish_seen_subcommand_from bypass" -a "eq" -d "Toggle EQ bypass only"
+    complete -c knob -n "__fish_seen_subcommand_from bypass" -a "eq" -d "Toggle equalizer bypass"
     complete -c knob -n "__fish_seen_subcommand_from bypass" -a "app" -d "Toggle app volume bypass"
-    complete -c knob -n "__fish_seen_subcommand_from bypass" -a "apps" -d "Toggle app volume bypass"
     complete -c knob -n "__fish_seen_subcommand_from band bands" -a "list" -d "List bands"
     complete -c knob -n "__fish_seen_subcommand_from band bands" -a "remove" -d "Remove band"
-    complete -c knob -n "__fish_seen_subcommand_from band bands" -a "pre" -d "Set preamp gain"
     complete -c knob -n "__fish_seen_subcommand_from band bands" -a "preamp" -d "Set preamp gain"
+    complete -c knob -n "__fish_seen_subcommand_from band bands" -a "(__knob_band_freqs)"
     complete -c knob -n "__fish_seen_subcommand_from app apps" -a "list" -d "List apps and volumes"
     complete -c knob -n "__fish_seen_subcommand_from app apps" -a "mute" -d "Mute app"
     complete -c knob -n "__fish_seen_subcommand_from app apps" -a "unmute" -d "Unmute app"
+    complete -c knob -n "__fish_seen_subcommand_from app apps" -a "(__knob_app_names)"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "list" -d "List presets"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "load" -d "Switch to preset"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "save" -d "Save current state"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "rename" -d "Rename preset"
-    complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "delete" -d "Delete preset"
-    complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "remove" -d "Delete preset"
+    complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "remove" -d "Remove preset"
     complete -c knob -n "__fish_seen_subcommand_from device devices" -a "list" -d "List devices"
     complete -c knob -n "__fish_seen_subcommand_from device devices" -a "assign" -d "Assign or clear device preset"
     complete -c knob -n "__fish_seen_subcommand_from completions" -a "bash" -d "Bash completions"
     complete -c knob -n "__fish_seen_subcommand_from completions" -a "zsh" -d "Zsh completions"
     complete -c knob -n "__fish_seen_subcommand_from completions" -a "fish" -d "Fish completions"
     complete -c knob -n "__fish_seen_subcommand_from completions" -a "nu" -d "Nushell completions"
-    """
+    """##
 }
 
 func nushellCompletions() -> String {
-    return """
-    # knob completions for nushell
+    return ##"""
+    def "nu-complete knob" [context: string, position: int] {
+        let ctx = ($context | str substring ..$position)
+        let has_space = ($ctx | str ends-with ' ')
+        let tokens = ($ctx | str trim | split row -r '\s+(?=(?:[^"]*"[^"]*")*[^"]*$)' | each { str replace -a '"' '' })
+        let arg_pos = if $has_space { $tokens | length } else { ($tokens | length) - 1 }
 
-    def "nu-complete knob subcommands" [] {
-        [{value: status, description: "show status"}
-         {value: bypass, description: "toggle bypass"}
-         {value: band, description: "manage EQ bands"}
-         {value: bands, description: "list EQ bands"}
-         {value: preamp, description: "set preamp gain"}
-         {value: pre, description: "set preamp gain"}
-         {value: app, description: "manage per-app volumes"}
-         {value: apps, description: "list apps and volumes"}
-         {value: preset, description: "manage presets"}
-         {value: presets, description: "list presets"}
-         {value: device, description: "manage device assignments"}
-         {value: devices, description: "list devices"}
-         {value: start, description: "start daemon"}
-         {value: stop, description: "stop daemon"}
-         {value: restart, description: "restart daemon"}
-         {value: completions, description: "generate shell completions"}
-         {value: help, description: "show help"}]
-    }
+        # --- inline helpers using -m JSON output ---
+        let q = { |val| if ($val | str contains ' ') { $"\"($val)\"" } else { $val } }
 
-    def "nu-complete knob bypass" [] {
-        [{value: eq, description: "toggle EQ bypass only"}
-         {value: app, description: "toggle app volume bypass only"}
-         {value: apps, description: "toggle app volume bypass only"}]
-    }
+        let get_bands = { ||
+            let j = (do { ^knob band -m 2>/dev/null } | complete).stdout
+            try { $j | from json } catch { [] } | where ($it.type? | default '') != 'preamp'
+        }
 
-    def "nu-complete knob band" [] {
-        [{value: list, description: "list bands"}
-         {value: remove, description: "remove band"}
-         {value: pre, description: "set preamp gain"}
-         {value: preamp, description: "set preamp gain"}]
-    }
+        let get_apps = { ||
+            let j = (do { ^knob app -m 2>/dev/null } | complete).stdout
+            try { $j | from json } catch { [] }
+        }
 
-    def "nu-complete knob app" [] {
-        [{value: list, description: "list apps and volumes"}
-         {value: mute, description: "mute app"}
-         {value: unmute, description: "unmute app"}]
-    }
+        let get_presets = { ||
+            let j = (do { ^knob preset -m 2>/dev/null } | complete).stdout
+            try { $j | from json } catch { [] } | each { |p|
+                let desc = if ($p.active? | default false) { $"($p.bands) bands *" } else { $"($p.bands) bands" }
+                {value: (do $q $p.name), description: $desc}
+            }
+        }
 
-    def "nu-complete knob preset" [] {
-        [{value: list, description: "list presets"}
-         {value: load, description: "switch to preset"}
-         {value: save, description: "save current state"}
-         {value: rename, description: "rename preset"}
-         {value: delete, description: "delete preset"}
-         {value: remove, description: "delete preset"}]
-    }
+        let get_devices = { ||
+            let j = (do { ^knob device -m 2>/dev/null } | complete).stdout
+            try { $j | from json } catch { [] } | each { |d|
+                let active = ($d.active? | default false)
+                let preset = ($d.preset? | default '')
+                let desc = (if $active and $preset != '' { $"preset: ($preset) *" }
+                    else if $preset != '' { $"preset: ($preset)" }
+                    else if $active { "*" }
+                    else { "" })
+                {value: (do $q $d.name), description: $desc}
+            }
+        }
 
-    def "nu-complete knob device" [] {
-        [{value: list, description: "list devices"}
-         {value: assign, description: "assign or clear device preset"}]
-    }
+        # --- position 1: top-level commands ---
+        if $arg_pos <= 1 {
+            return [{value: status, description: "show status"}
+                    {value: bypass, description: "toggle bypass"}
+                    {value: band, description: "manage equalizer bands"}
+                    {value: app, description: "manage per-app volumes"}
+                    {value: preset, description: "manage presets"}
+                    {value: device, description: "manage device assignments"}
+                    {value: start, description: "start daemon"}
+                    {value: stop, description: "stop daemon"}
+                    {value: restart, description: "restart daemon"}
+                    {value: completions, description: "generate shell completions"}
+                    {value: help, description: "show help"}]
+        }
 
-    def "nu-complete knob completions" [] {
-        [{value: bash, description: "bash completions"}
-         {value: zsh, description: "zsh completions"}
-         {value: fish, description: "fish completions"}
-         {value: nu, description: "nushell completions"}]
-    }
+        let cmd = ($tokens | get 1)
 
-    def "nu-complete knob filter-types" [] {
-        [{value: peaking, description: "bell curve (default)"}
-         {value: lowshelf, description: "boost/cut below frequency"}
-         {value: highshelf, description: "boost/cut above frequency"}
-         {value: lowpass, description: "pass below frequency"}
-         {value: highpass, description: "pass above frequency"}
-         {value: p, description: "peaking"} {value: ls, description: "lowshelf"}
-         {value: hs, description: "highshelf"} {value: lp, description: "lowpass"}
-         {value: hp, description: "highpass"}]
+        # --- position 2: subcommands ---
+        if $arg_pos == 2 {
+            match $cmd {
+                bypass => {
+                    [{value: eq, description: "toggle equalizer bypass"}
+                     {value: app, description: "toggle app volume bypass"}]
+                }
+                band | bands => {
+                    let bands = (do $get_bands)
+                    let items = ($bands | each { |b|
+                        let f = if ($b.freq | math round) == $b.freq { $"($b.freq | into int)Hz" } else { $"($b.freq)Hz" }
+                        let g = if $b.gain >= 0 { $"+($b.gain | math round --precision 1)dB" } else { $"($b.gain | math round --precision 1)dB" }
+                        {value: $f, description: $"($g) ($b.q)Q ($b.type)"}
+                    })
+                    [{value: preamp, description: "set preamp gain"}
+                     {value: remove, description: "remove band"}
+                     ...$items]
+                }
+                app | apps => {
+                    let apps = (do $get_apps)
+                    let vol_str = { |a| $a.volume? | default '' }
+                    let items = ($apps | each { |a| {value: (do $q $a.name), description: (do $vol_str $a)} })
+                    [{value: list, description: "list apps and volumes"}
+                     {value: mute, description: "mute app"}
+                     {value: unmute, description: "unmute app"}
+                     ...$items]
+                }
+                preset | presets => {
+                    [{value: list, description: "list presets"}
+                     {value: load, description: "switch to preset"}
+                     {value: save, description: "save current as preset"}
+                     {value: rename, description: "rename preset"}
+                     {value: remove, description: "remove preset"}]
+                }
+                device | devices => {
+                    [{value: list, description: "list devices"}
+                     {value: assign, description: "assign or clear device preset"}]
+                }
+                completions => {
+                    [{value: bash, description: "bash completions"}
+                     {value: zsh, description: "zsh completions"}
+                     {value: fish, description: "fish completions"}
+                     {value: nu, description: "nushell completions"}]
+                }
+                _ => { [] }
+            }
+        } else if $arg_pos == 3 {
+            # --- position 3 ---
+            let sub = ($tokens | get -o 2 | default '')
+            # Helper: match freq token (e.g., "1262Hz") to JSON band by numeric freq
+            let find_band = { |tok|
+                let hz = ($tok | str replace -r '(?i)hz' '' | into float)
+                do $get_bands | where { |b| ($b.freq - $hz | math abs) < 0.5 } | first
+            }
+            let fmt_gain = { |g| if $g >= 0 { $"+($g | math round --precision 1)dB" } else { $"($g | math round --precision 1)dB" } }
+            match $cmd {
+                band | bands => {
+                    if $sub == "remove" {
+                        let bands = (do $get_bands)
+                        let freqs = ($bands | each { |b|
+                            let f = if ($b.freq | math round) == $b.freq { $"($b.freq | into int)Hz" } else { $"($b.freq)Hz" }
+                            {value: $f}
+                        })
+                        [{value: all, description: "remove all bands"} ...$freqs]
+                    } else {
+                        let band = (try { do $find_band $sub } catch { null })
+                        if $band != null {
+                            [{value: (do $fmt_gain $band.gain), description: "gain"}]
+                        } else if $sub == "preamp" {
+                            let all = (do { ^knob band -m 2>/dev/null } | complete).stdout
+                            let preamp = (try { $all | from json } catch { [] } | where ($it.type? | default '') == 'preamp' | first)
+                            if $preamp != null { [{value: (do $fmt_gain $preamp.gain), description: "current preamp"}] } else { [] }
+                        } else { [] }
+                    }
+                }
+                app | apps => {
+                    if $sub == "mute" or $sub == "unmute" {
+                        do $get_apps | each { |a| {value: (do $q $a.name)} }
+                    } else { [] }
+                }
+                preset | presets => {
+                    if $sub in [load remove rename] { do $get_presets } else { [] }
+                }
+                device | devices => {
+                    if $sub == "assign" { do $get_devices } else { [] }
+                }
+                _ => { [] }
+            }
+        } else if $arg_pos == 4 {
+            # --- position 4 ---
+            let find_band = { |tok|
+                let hz = ($tok | str replace -r '(?i)hz' '' | into float)
+                do $get_bands | where { |b| ($b.freq - $hz | math abs) < 0.5 } | first
+            }
+            match $cmd {
+                band | bands => {
+                    let freq = ($tokens | get -o 2 | default '')
+                    let band = (try { do $find_band $freq } catch { null })
+                    if $band != null {
+                        [{value: $"($band.q)Q", description: "Q factor"}]
+                    } else { [] }
+                }
+                device | devices => {
+                    let sub = ($tokens | get -o 2 | default '')
+                    if $sub == "assign" { do $get_presets } else { [] }
+                }
+                _ => { [] }
+            }
+        } else if $arg_pos == 5 {
+            # --- position 5 ---
+            let find_band = { |tok|
+                let hz = ($tok | str replace -r '(?i)hz' '' | into float)
+                do $get_bands | where { |b| ($b.freq - $hz | math abs) < 0.5 } | first
+            }
+            match $cmd {
+                band | bands => {
+                    let freq = ($tokens | get -o 2 | default '')
+                    let band = (try { do $find_band $freq } catch { null })
+                    if $band != null {
+                        [{value: $band.type, description: "filter type"}]
+                    } else { [] }
+                }
+                _ => { [] }
+            }
+        } else { [] }
     }
 
     export extern "knob" [
-        command?: string@"nu-complete knob subcommands"
-        ...rest: string
+        ...args: string@"nu-complete knob"
     ]
-
-    export extern "knob bypass" [target?: string@"nu-complete knob bypass"]
-    export extern "knob band" [subcommand?: string@"nu-complete knob band" ...rest: string]
-    export extern "knob app" [subcommand?: string@"nu-complete knob app" ...rest: string]
-    export extern "knob preset" [subcommand?: string@"nu-complete knob preset" ...rest: string]
-    export extern "knob device" [subcommand?: string@"nu-complete knob device" ...rest: string]
-    export extern "knob completions" [shell?: string@"nu-complete knob completions"]
-    """
+    """##
 }
 
 // MARK: - Usage
 
 func printUsage() {
     print("""
-    knob 0.1.0
+    knob 0.1.1
 
     parametric equalizer and per-app volume control for mac
 
@@ -1425,12 +1650,12 @@ func printUsage() {
 
     knob
     | [  | status ]                 show status
-    | [ -h | help ]                 show this help page
-    | [ start | stop | restart ]    control whether knob is running
+    | help                          show this help page
+    | [ start | stop | restart ]    control knob daemon
 
     knob bypass
-    | [  ]                          toggle EQ and app volume bypass
-    | eq                            toggle EQ bypass only
+    | [  ]                          toggle equalizer and app volume bypass
+    | eq                            toggle equalizer bypass only
     | [ app | apps ]                toggle app volume bypass only
 
     knob preset
@@ -1438,7 +1663,7 @@ func printUsage() {
     | load <name>                   switch to preset
     | save <name>                   save current state as preset
     | rename <old> <new>            rename preset
-    | [ delete | remove ] <name>    delete preset
+    | [ remove | delete ] <name>    remove preset
 
     knob band
     | [  | list ]                   list bands in active preset
@@ -1449,9 +1674,9 @@ func printUsage() {
 
     knob app
     | [  | list ]                   list apps and volume overrides
-    | <volume> <app name>           set per-app volume (fuzzy match)
+    | <app name> <volume>           set per-app volume (fuzzy match)
     | mute <app name>               mute app
-    | unmute <app name>             remove volume override
+    | unmute <app name>             unmute app
 
     knob device
     | [  | list ]                   list output devices and assignments
@@ -1486,11 +1711,11 @@ func printUsage() {
     knob band 1khz +3db pea 2.0q    fully labeled (any order)
     knob band remove 1k             remove band at 1kHz
     knob band pre -2                set preamp to -2dB
-    knob app 0.5 spotify            set spotify volume to 50%
-    knob app 1.5 discord            set discord volume to 150%
-    knob app mute chrome            mute chrome
-    knob bypass eq                  toggle EQ bypass
-    knob preset save bright         save current EQ as "bright"
+    knob app spotify 0.5             set spotify volume to 50%
+    knob app discord 1.5             set discord volume to 150%
+    knob app mute chrome             mute chrome
+    knob bypass eq                  toggle equalizer bypass
+    knob preset save bright         save current preset as "bright"
     knob device assign buds bright  auto-load "bright" when using "buds" audio device
     """)
 }

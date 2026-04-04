@@ -1,4 +1,4 @@
-.PHONY: build bundle install uninstall clean dist
+.PHONY: build bundle install uninstall clean dist test test-stop
 
 # Force Xcode toolchain — nix sets SDKROOT/DEVELOPER_DIR to a nix SDK
 # that's incompatible with the system Swift compiler.
@@ -60,6 +60,27 @@ uninstall:
 	-sudo rm -rf /Library/Audio/Plug-Ins/HAL/knob-driver.driver
 	-sudo launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null
 	@echo "Uninstalled."
+
+test: release
+	@# Stop nix-managed knob
+	-launchctl bootout gui/$$(id -u)/com.csutora.knob 2>/dev/null
+	-sudo launchctl bootout system/com.csutora.knob.ipc 2>/dev/null
+	@# Install everything (driver, IPC helper, app, CLI)
+	sudo mkdir -p /Library/Audio/Plug-Ins/HAL
+	sudo rm -rf /Library/Audio/Plug-Ins/HAL/knob-driver.driver
+	sudo cp -R .build/release/knob-driver.driver /Library/Audio/Plug-Ins/HAL/knob-driver.driver
+	sudo cp .build/release/knob-ipc /Library/Audio/Plug-Ins/HAL/knob-ipc
+	sudo cp Resources/com.csutora.knob.ipc.plist /Library/LaunchDaemons/com.csutora.knob.ipc.plist
+	sudo launchctl bootstrap system /Library/LaunchDaemons/com.csutora.knob.ipc.plist
+	sudo killall -9 coreaudiod 2>/dev/null || true
+	@sleep 2
+	@# Launch daemon in foreground so logs go to terminal
+	.build/release/knob.app/Contents/MacOS/knobd
+
+test-stop:
+	@# Stop local test daemon and restore nix-managed version
+	-pkill -x knobd 2>/dev/null
+	@echo "Run darwin-rebuild switch to restore nix-managed knob."
 
 clean:
 	swift package clean

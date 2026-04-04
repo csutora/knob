@@ -45,11 +45,11 @@ struct FilterBank {
     /// Process interleaved stereo audio in-place.
     /// Called from the real-time audio thread — MUST be allocation-free.
     func process(buffer: UnsafeMutablePointer<Float>, frameCount: Int, channelCount: Int) {
-        guard enabled, bandCount > 0 else { return }
+        guard enabled else { return }
 
         let sampleCount = frameCount * channelCount
 
-        // Apply preamp gain
+        // Apply preamp gain (even with 0 bands)
         if preampGainLinear != 1.0 {
             for i in 0..<sampleCount {
                 buffer[i] *= preampGainLinear

@@ -49,6 +49,8 @@
             if security export-smartcard 2>/dev/null | grep -q "Developer Signing"; then
               export CODESIGN_IDENTITY="Developer Signing"
             fi
+            # Put local release build on PATH for testing
+            export PATH="$PWD/.build/release/knob.app/Contents/MacOS:$PATH"
           '';
         };
       });
@@ -115,6 +117,8 @@
               # knob: always stop the daemon before any updates
               CONSOLE_UID=$(stat -f %u /dev/console 2>/dev/null || echo 501)
               launchctl bootout gui/"$CONSOLE_UID"/com.csutora.knob 2>/dev/null || true
+              pkill -x knobd 2>/dev/null || true
+              sleep 1
 
               # knob: install HAL driver (only restart coreaudiod when driver changes)
               mkdir -p /Library/Audio/Plug-Ins/HAL

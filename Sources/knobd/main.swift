@@ -134,6 +134,7 @@ func reloadConfig() {
 
 struct DaemonState: Codable {
     var lastDeviceUID: String?
+    var presetBeforeDeviceOverride: String?
 }
 
 nonisolated(unsafe) var daemonState = DaemonState()
@@ -1065,8 +1066,19 @@ func handleDeviceListChange() {
 
     if let presetName = config.devicePresets[newName],
        presetName == "flat" || config.presets[presetName] != nil {
+        if daemonState.presetBeforeDeviceOverride == nil {
+            daemonState.presetBeforeDeviceOverride = config.activePreset
+            saveDaemonState()
+        }
         config.activePreset = presetName
         applyActivePreset()
+        log("device preset: \(presetName)")
+    } else if let restore = daemonState.presetBeforeDeviceOverride {
+        config.activePreset = restore
+        daemonState.presetBeforeDeviceOverride = nil
+        saveDaemonState()
+        applyActivePreset()
+        log("restored preset: \(restore)")
     }
     filterBank.pointee.resetState()
 
@@ -1466,8 +1478,21 @@ func handleDeviceChange() {
 
     if let presetName = config.devicePresets[newName],
        presetName == "flat" || config.presets[presetName] != nil {
+        // Save current preset so we can restore it when switching to a device without an override
+        if daemonState.presetBeforeDeviceOverride == nil {
+            daemonState.presetBeforeDeviceOverride = config.activePreset
+            saveDaemonState()
+        }
         config.activePreset = presetName
         applyActivePreset()
+        log("device preset: \(presetName)")
+    } else if let restore = daemonState.presetBeforeDeviceOverride {
+        // No device-specific preset — restore the previous one
+        config.activePreset = restore
+        daemonState.presetBeforeDeviceOverride = nil
+        saveDaemonState()
+        applyActivePreset()
+        log("restored preset: \(restore)")
     }
     filterBank.pointee.resetState()
 
