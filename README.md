@@ -150,3 +150,10 @@ knob plot testing
 # get machine-readable json for scripting, works with all list commands
 knob band list -m
 ```
+
+
+## known issues
+
+- when switching audio devices, there's a moment when audio is playing directly to the selected device. during this, eq and app-specific volumes aren't applied, which can cause apps with lowered volumes to be normal volume (and therefore too loud) for a split second. i haven't yet found a nice way to fix this, but it shouldn't affect day-to-day usage in most cases
+
+- when switching audio devices, the volume slider jumps around for a bit before settling. this is an artifact of macos restoring incorrect cached device volumes onto knob's audio device. this is purely visual and does not affect the actual audio volume, but it's a bit janky sadly. i haven't found a way to opt out of this macos behavior so i'm unsure if this is fixable at all
