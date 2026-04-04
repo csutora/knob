@@ -34,23 +34,28 @@ dist: release
 	echo "Built dist/ and knob-$$VERSION.tar.gz"; \
 	shasum -a 256 "knob-$$VERSION.tar.gz"
 
-install: release
+install:
+	@test -d dist/knob.app || (echo "error: dist/ not found. run 'make dist' first or use the pre-built release." && exit 1)
+	xattr -cr dist/
+	-launchctl bootout gui/$$(id -u)/com.csutora.knob 2>/dev/null
+	-pkill -x knobd 2>/dev/null
 	mkdir -p /usr/local/bin ~/Applications ~/Library/LaunchAgents
 	rm -rf ~/Applications/knob.app
-	cp -R .build/release/knob.app ~/Applications/knob.app
+	cp -R dist/knob.app ~/Applications/knob.app
 	ln -sf ~/Applications/knob.app/Contents/MacOS/knob /usr/local/bin/knob
 	cp Resources/com.csutora.knob.plist ~/Library/LaunchAgents/com.csutora.knob.plist
 	sed -i '' 's|__HOME__|$(HOME)|' ~/Library/LaunchAgents/com.csutora.knob.plist
 	sudo mkdir -p /Library/Audio/Plug-Ins/HAL
 	sudo rm -rf /Library/Audio/Plug-Ins/HAL/knob-driver.driver
-	sudo cp -R .build/release/knob-driver.driver /Library/Audio/Plug-Ins/HAL/knob-driver.driver
-	sudo cp .build/release/knob-ipc /Library/Audio/Plug-Ins/HAL/knob-ipc
+	sudo cp -R dist/knob-driver.driver /Library/Audio/Plug-Ins/HAL/knob-driver.driver
+	sudo cp dist/knob-ipc /Library/Audio/Plug-Ins/HAL/knob-ipc
 	sudo cp Resources/com.csutora.knob.ipc.plist /Library/LaunchDaemons/com.csutora.knob.ipc.plist
 	sudo launchctl bootout system/com.csutora.knob.ipc 2>/dev/null || true
 	sudo launchctl bootstrap system /Library/LaunchDaemons/com.csutora.knob.ipc.plist
-	sudo launchctl kickstart -k system/com.apple.audio.coreaudiod
-	@echo "Installed. Run: open ~/Applications/knob.app"
-	@echo "Then: launchctl load ~/Library/LaunchAgents/com.csutora.knob.plist"
+	sudo killall -9 coreaudiod 2>/dev/null || true
+	@sleep 2
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/com.csutora.knob.plist 2>/dev/null || true
+	@echo "knob installed and started."
 
 uninstall:
 	-launchctl unload ~/Library/LaunchAgents/com.csutora.knob.plist 2>/dev/null

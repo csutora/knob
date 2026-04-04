@@ -14,7 +14,7 @@
       # Rebuild with: make dist
       mkKnob = pkgs: pkgs.stdenv.mkDerivation {
         pname = "knob";
-        version = "0.1.2";
+        version = "0.1.3";
         src = ./dist;
 
         dontBuild = true;
@@ -202,9 +202,13 @@
               '';
             })
             (lib.mkIf cfg.enableNushellIntegration {
-              programs.nushell.extraConfig = builtins.readFile (pkgs.runCommand "knob-nushell-completions" {} ''
-                ${cfg.package}/bin/knob completions nu > $out
-              '');
+              programs.nushell.extraConfig = let
+                completions = pkgs.runCommand "knob-nushell-completions" {} ''
+                  ${cfg.package}/bin/knob completions nu > $out
+                '';
+              in ''
+                source ${completions}
+              '';
             })
           ]);
         };

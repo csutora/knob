@@ -760,28 +760,29 @@ func handleApp(_ args: [String]) throws {
         return
     }
 
-    var config = try loadConfig()
+    // `knob app <name> <volume|mute|unmute>`
+    // Last arg is the action/value, everything before is the app name
+    guard args.count >= 2 else {
+        fail("usage: knob app <app name> <volume | mute | unmute>")
+    }
 
-    if args.first == "mute" {
-        let appName = args.dropFirst().joined(separator: " ")
-        guard !appName.isEmpty else { fail("usage: knob app mute <app name>") }
-        let bundleID = resolveApp(appName, config: config)
+    let action = args.last!
+    let appName = args.dropLast().joined(separator: " ")
+    guard !appName.isEmpty else { fail("usage: knob app <app name> <volume | mute | unmute>") }
+
+    var config = try loadConfig()
+    let bundleID = resolveApp(appName, config: config)
+
+    if action == "mute" {
         let current = config.appVolumes[bundleID] ?? 1.0
         if current < 0 {
             print("\(bundleID) is already muted.")
             return
         }
-        // Store as negative to remember the pre-mute volume
         config.appVolumes[bundleID] = -current
         try saveConfigAndReload(config)
         print("muted \(bundleID)")
-        return
-    }
-
-    if args.first == "unmute" {
-        let appName = args.dropFirst().joined(separator: " ")
-        guard !appName.isEmpty else { fail("usage: knob app unmute <app name>") }
-        let bundleID = resolveApp(appName, config: config)
+    } else if action == "unmute" {
         guard let current = config.appVolumes[bundleID] else {
             print("no volume override for \(bundleID).")
             return
@@ -790,7 +791,6 @@ func handleApp(_ args: [String]) throws {
             print("\(bundleID) is not muted.")
             return
         }
-        // Restore the pre-mute volume
         let restored = -current
         if restored == 1.0 {
             config.appVolumes.removeValue(forKey: bundleID)
@@ -799,24 +799,17 @@ func handleApp(_ args: [String]) throws {
         }
         try saveConfigAndReload(config)
         print("unmuted \(bundleID) -> \(String(format: "%.2f", restored))")
-        return
-    }
-
-    // `knob app <app name> <volume>`
-    // Last arg is the volume, everything before is the app name
-    guard args.count >= 2, let volume = Double(args.last!) else {
-        fail("usage: knob app <app name> <volume> | mute <app> | unmute <app>")
-    }
-    let appName = args.dropLast().joined(separator: " ")
-    guard !appName.isEmpty else { fail("usage: knob app <app name> <volume>") }
-    let bundleID = resolveApp(appName, config: config)
-    if volume == 1.0 {
-        config.appVolumes.removeValue(forKey: bundleID)
+    } else if let volume = Double(action) {
+        if volume == 1.0 {
+            config.appVolumes.removeValue(forKey: bundleID)
+        } else {
+            config.appVolumes[bundleID] = volume
+        }
+        try saveConfigAndReload(config)
+        print("set \(bundleID) to \(String(format: "%.2f", volume))")
     } else {
-        config.appVolumes[bundleID] = volume
+        fail("usage: knob app <app name> <volume | mute | unmute>")
     }
-    try saveConfigAndReload(config)
-    print("set \(bundleID) to \(String(format: "%.2f", volume))")
 }
 
 func handleAppList(machine: Bool = false) throws {
@@ -1231,7 +1224,7 @@ func bashCompletions() -> String {
                 case "${words[1]}" in
                     bypass) COMPREPLY=($(compgen -W "eq app" -- "$cur")) ;;
                     band|bands) COMPREPLY=($(compgen -W "list remove preamp $(_knob_band_freqs)" -- "$cur")) ;;
-                    app|apps) COMPREPLY=($(compgen -W "list mute unmute $(_knob_app_names)" -- "$cur")) ;;
+                    app|apps) COMPREPLY=($(compgen -W "list $(_knob_app_names)" -- "$cur")) ;;
                     preset|presets) COMPREPLY=($(compgen -W "list load save rename remove" -- "$cur")) ;;
                     device|devices) COMPREPLY=($(compgen -W "list assign" -- "$cur")) ;;
                     completions) COMPREPLY=($(compgen -W "bash zsh fish nu" -- "$cur")) ;;
@@ -1245,9 +1238,7 @@ func bashCompletions() -> String {
                         fi
                         ;;
                     app|apps)
-                        if [[ "${words[2]}" == "mute" || "${words[2]}" == "unmute" ]]; then
-                            COMPREPLY=($(compgen -W "$(_knob_app_names)" -- "$cur"))
-                        fi
+                        COMPREPLY=($(compgen -W "mute unmute" -- "$cur"))
                         ;;
                     preset|presets)
                         case "${words[2]}" in
@@ -1331,17 +1322,15 @@ func zshCompletions() -> String {
             app|apps)
                 if (( CURRENT == 3 )); then
                     local -a app_cmds
-                    app_cmds=('list:list apps and volumes' 'mute:mute app' 'unmute:unmute app')
+                    app_cmds=('list:list apps and volumes')
                     _describe 'app command' app_cmds
                     local -a apps
                     apps=(${(f)"$(_knob_app_names)"})
                     (( ${#apps} )) && compadd -a apps
                 elif (( CURRENT == 4 )); then
-                    if [[ "$words[3]" == "mute" || "$words[3]" == "unmute" ]]; then
-                        local -a apps
-                        apps=(${(f)"$(_knob_app_names)"})
-                        compadd -a apps
-                    fi
+                    local -a actions
+                    actions=('mute:mute app' 'unmute:unmute app')
+                    _describe 'action' actions
                 fi
                 ;;
             preset|presets)
@@ -1427,8 +1416,6 @@ func fishCompletions() -> String {
     complete -c knob -n "__fish_seen_subcommand_from band bands" -a "preamp" -d "Set preamp gain"
     complete -c knob -n "__fish_seen_subcommand_from band bands" -a "(__knob_band_freqs)"
     complete -c knob -n "__fish_seen_subcommand_from app apps" -a "list" -d "List apps and volumes"
-    complete -c knob -n "__fish_seen_subcommand_from app apps" -a "mute" -d "Mute app"
-    complete -c knob -n "__fish_seen_subcommand_from app apps" -a "unmute" -d "Unmute app"
     complete -c knob -n "__fish_seen_subcommand_from app apps" -a "(__knob_app_names)"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "list" -d "List presets"
     complete -c knob -n "__fish_seen_subcommand_from preset presets" -a "load" -d "Switch to preset"
@@ -1526,8 +1513,6 @@ func nushellCompletions() -> String {
                     let vol_str = { |a| $a.volume? | default '' }
                     let items = ($apps | each { |a| {value: (do $q $a.name), description: (do $vol_str $a)} })
                     [{value: list, description: "list apps and volumes"}
-                     {value: mute, description: "mute app"}
-                     {value: unmute, description: "unmute app"}
                      ...$items]
                 }
                 preset | presets => {
@@ -1579,9 +1564,9 @@ func nushellCompletions() -> String {
                     }
                 }
                 app | apps => {
-                    if $sub == "mute" or $sub == "unmute" {
-                        do $get_apps | each { |a| {value: (do $q $a.name)} }
-                    } else { [] }
+                    # After app name, offer mute/unmute/volume
+                    [{value: mute, description: "mute app"}
+                     {value: unmute, description: "unmute app"}]
                 }
                 preset | presets => {
                     if $sub in [load remove rename] { do $get_presets } else { [] }
@@ -1640,7 +1625,7 @@ func nushellCompletions() -> String {
 
 func printUsage() {
     print("""
-    knob 0.1.2
+    knob 0.1.3
 
     parametric equalizer and per-app volume control for mac
 
@@ -1675,8 +1660,8 @@ func printUsage() {
     knob app
     | [  | list ]                   list apps and volume overrides
     | <app name> <volume>           set per-app volume (fuzzy match)
-    | mute <app name>               mute app
-    | unmute <app name>             unmute app
+    | <app name> mute               mute app
+    | <app name> unmute             unmute app
 
     knob device
     | [  | list ]                   list output devices and assignments
@@ -1685,12 +1670,14 @@ func printUsage() {
 
     knob completions <shell>        generate completions (bash/zsh/fish/nu)
 
+    append -m to any list command for machine-readable json output.
+
     ---
 
     band parameters are positional and all optional except frequency.
     labeled forms (1khz, +3db, q=1.4, etc) can appear in any order.
 
-    freq   1k, 1000, 1khz, 0.3k, 300hz           (k = ×1000, hz optional)
+    freq   1k, 1000, 1khz, 0.3k, 300hz           (k = x1000, hz optional)
     gain   +3, -3, 3, 3db                        (sign or db suffix)
     q      1.4, q=1.4, 1.4q                      (default: 1.0 peak, 0.707 shelf)
     type   peaking (p), lowshelf (ls), highshelf (hs), lowpass (lp), highpass (hp)
@@ -1703,19 +1690,30 @@ func printUsage() {
 
     examples:
 
-    knob                            show status
-    knob band 1k +3                 add peaking band at 1kHz, +3dB, Q=1.0
-    knob band 1k -1                 update gain to -1dB (keep Q, type)
-    knob band 1k ls                 change type to lowshelf (keep gain, Q)
-    knob band 1k q=2.0              change Q only
-    knob band 1khz +3db pea 2.0q    fully labeled (any order)
-    knob band remove 1k             remove band at 1kHz
-    knob band pre -2                set preamp to -2dB
-    knob app spotify 0.5             set spotify volume to 50%
-    knob app discord 1.5             set discord volume to 150%
-    knob app mute chrome             mute chrome
-    knob bypass eq                  toggle equalizer bypass
-    knob preset save bright         save current preset as "bright"
-    knob device assign buds bright  auto-load "bright" when using "buds" audio device
+    knob                              show status
+    knob start                        start the daemon
+
+    knob band preamp -2               set preamp to -2dB
+    knob band 300 -3                  add peaking band at 300Hz, -3dB
+    knob band 300 -2.5                update gain (keep Q, type)
+    knob band 4khz +2.1db             labeled gain
+    knob band 6200hz 3.2db 0.63q hs   fully labeled, any order
+    knob band list                    list all bands
+
+    knob preset save testing          save current preset as "testing"
+    knob preset list                  list all presets
+    knob preset load flat             switch to flat preset
+
+    knob device list                  list devices and assignments
+    knob device assign buds testing   auto-load "testing" on buds
+
+    knob app list                     list apps and volumes
+    knob app music 0.5                set music to 50%
+    knob app com.apple.Music 0.6      use bundle id directly
+    knob app music mute               mute music
+    knob app music unmute             unmute music
+
+    knob bypass app                   toggle app volume bypass
+    knob bypass eq                    toggle equalizer bypass
     """)
 }
